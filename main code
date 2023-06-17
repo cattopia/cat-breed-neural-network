@@ -1,0 +1,204 @@
+from google.colab import drive
+drive.mount('/content/drive/MyDrive/datasets')
+    import torch
+    import torchvision
+    from torch import nn
+    from torchvision import transforms
+    from torch.utils.data import DataLoader
+    from torchvision.datasets import ImageFolder
+    import torch.optim as optim
+    from torch.optim import lr_scheduler
+    from torchvision.models import  resnet50,ResNet50_Weights
+    assert int(torch.__version__.split(".")[1]) >= 12, "torch version should be 1.12+"
+    assert int(torchvision.__version__.split(".")[1]) >= 13, "torchvision version should be 0.13+"
+import os
+import numpy as np 
+import random
+import matplotlib.pyplot as plt
+from tqdm import tqdm
+import time
+import copy
+
+random_seed = 2023
+np.random.seed(random_seed)
+torch.manual_seed(random_seed)
+random.seed(random_seed)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
+
+device = "cuda" if torch.cuda.is_available() else "cpu"
+print("device ",device)
+
+TRAIN_DIR = "/content/drive/MyDrive/datasets/cat dataset/train"
+TEST_DIR ="/content/drive/MyDrive/datasets/cat dataset/test"
+data_dir = TRAIN_DIR
+classes = os.listdir(data_dir)
+classes=sorted(classes)
+#classes.pop(-1)
+count=0
+smallest_class_count=10000000
+smallest_class=""
+largest_class_count=0
+largest_class=""
+for i in classes:
+    length=len(os.listdir(data_dir+"/"+i))
+    if length<smallest_class_count:
+        smallest_class= i
+        smallest_class_count=length
+    if length>largest_class_count:
+        largest_class=i
+        largest_class_count=length
+    print("number of images in class",i,"is",length)
+    count+=length
+print("\nTotal number of images in the dataset :",count)
+print("\nLargest class is",largest_class,"and it has",largest_class_count,"images")
+print("Smallest class is",smallest_class,"and it has",smallest_class_count,"images")
+
+#rom torch.datasets import ImageFolder
+batch_size=64
+train_transform = ResNet50_Weights.DEFAULT.transforms()
+
+test_transform = transforms.Compose([
+    transforms.Resize((250, 250)),
+    transforms.ToTensor(), # ToTensor : [0, 255] -> [0, 1]
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
+
+
+train_data = ImageFolder(TRAIN_DIR, train_transform)
+test_data = ImageFolder(TEST_DIR, test_transform)
+print("crying hi :)")
+train_loader = DataLoader(train_data,
+                          batch_size=batch_size,
+                          shuffle=True)
+
+test_loader = DataLoader(test_data, 
+                         batch_size=batch_size,
+                         shuffle=True)
+image_datasets={"train":train_data,"test":test_data}
+dataloaders={"train":train_loader,"test":test_loader}
+dataset_sizes = {x: len(image_datasets[x]) for x in ['train', 'test']}
+
+idex_to_class = dict([(value, key) for key, value in test_data.class_to_idx.items()])
+idex_to_class
+
+def show_image(img, label,dataset=test_data):
+    print('Label: ', dataset.classes[label], "("+str(label)+")")
+    #cause matplotlib expects you to have the channels last insted of first like in torch
+    plt.imshow(img.permute(1, 2, 0))
+    
+    data=iter(train_data)
+im,l=next(data)
+show_image(im,l,train_data)
+
+model = resnet50(weights=ResNet50_Weights.DEFAULT).to(device)
+"""for param in model.parameters():
+    param.requires_grad = False
+"""
+num_ftrs = model.fc.in_features
+model.fc = nn.Linear(num_ftrs, 35)
+
+model = model.to(device)
+
+criterion = nn.CrossEntropyLoss()
+optimizer = torch.optim.SGD(model.parameters(), lr=0.0006, momentum=0.9)
+exp_lr_scheduler = lr_scheduler.StepLR(optimizer, step_size=20, gamma=0.1)
+
+def train_model(model, criterion, optimizer, scheduler, phases,num_epochs=25 ):
+    since = time.time()
+
+    best_model_wts = copy.deepcopy(model.state_dict())
+    best_acc = 0.0
+
+    for epoch in range(num_epochs):
+        print(f'Epoch {epoch}/{num_epochs - 1}')
+        print('-' * 10)
+
+        # Each epoch has a training and validation phase
+        for phase in phases:
+            if phase == 'train':
+                model.train()  # Set model to training mode
+            else:
+                model.eval()   # Set model to evaluate mode
+
+            running_loss = 0.0
+            running_corrects = 0
+
+            # Iterate over data.
+            for inputs, labels in tqdm(dataloaders[phase],desc=phase, position=0, leave=True):
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+
+                # zero the parameter gradients
+                optimizer.zero_grad()
+
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(phase == 'train'):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    loss = criterion(outputs, labels)
+
+                    # backward + optimize only if in training phase
+                    if phase == 'train':
+                        loss.backward()
+                        optimizer.step()
+
+                # statistics
+                running_loss += loss.item() * inputs.size(0)
+                running_corrects += torch.sum(preds == labels.data)
+            if phase == 'train':
+                scheduler.step()
+
+            epoch_loss = running_loss / dataset_sizes[phase]
+            epoch_acc = running_corrects.double() / dataset_sizes[phase]
+
+            print(f'{phase} Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f}')
+
+            # deep copy the model
+            if phase == 'test' and epoch_acc > best_acc:
+                best_acc = epoch_acc
+            if epoch % 5==0:
+                torch.save(model,str(epoch)+str(best_acc)+"resnet34.pt")
+
+        print()
+
+    time_elapsed = time.time() - since
+    print(f'Training complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s')
+    print(f'Best val Acc: {best_acc:4f}')
+
+    # load best model weights
+    model.load_state_dict(best_model_wts)
+    return model
+
+    model = train_model(model, criterion, optimizer,
+                         exp_lr_scheduler,['train','test'], num_epochs=30)
+    
+    running_corrects=0
+pred=[]
+target=[]
+for inputs, labels in tqdm(dataloaders["test"],desc="test", position=0, leave=True):
+                inputs = inputs.to(device)
+                labels = labels.to(device)
+                target+=labels.cpu().detach().numpy().tolist()
+                # forward
+                # track history if only in train
+                with torch.set_grad_enabled(False):
+                    outputs = model(inputs)
+                    _, preds = torch.max(outputs, 1)
+                    pred+=preds.cpu().detach().numpy().tolist()
+                    
+                running_corrects += torch.sum(preds == labels.data)
+
+list_of_classes=list(range(0,35))
+acc = [0 for c in list_of_classes]
+for i in range(len(target)):
+    if target[i] == 2 and pred[i]==2:
+        print("hi")
+    if target[i]==pred[i]:
+        acc[target[i]] +=1
+for i in range(0,42):
+    total=target.count(i)
+    acc[i]/=total
+acc
